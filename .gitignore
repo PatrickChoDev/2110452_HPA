@@ -1,0 +1,61 @@
+# CMake specific
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+cmake-build*/
+_deps/
+*.cmake
+!CMakeLists.txt
+compile_commands.json
+CMakeUserPresets.json
+
+# Build outputs
+build/
+out/
+bin/
+lib/
+
+# C/C++ specific
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+*.d
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+*.lai
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# IDE specific (optional)
+.idea/
+.vscode/
+*.swp
+*.swo
