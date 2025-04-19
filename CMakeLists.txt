@@ -1,7 +1,13 @@
 cmake_minimum_required(VERSION 3.15)
 
 # Project Name and Version
-project(VectorAdd LANGUAGES CXX VERSION 1.0)
+project(HPA LANGUAGES CXX VERSION 1.0)
+
+
+if(APPLE)
+    set(CMAKE_C_COMPILER "/opt/homebrew/bin/gcc-14")
+    set(CMAKE_CXX_COMPILER "/opt/homebrew/bin/g++-14")
+endif()
 
 # Set the C++ Standard
 set(CMAKE_CXX_STANDARD 17)
@@ -42,7 +48,17 @@ foreach(target vectorization_neon vectorization_no_neon)
     endif()
 endforeach()
 
+# Target for Threading executable
 add_executable(threading src/cmd/threading.cpp)
 target_compile_options(threading PRIVATE -O3)
+
+# Target for openmp executable
+add_executable(openmp src/cmd/openmp.cpp)
+target_link_directories(openmp PRIVATE "/opt/homebrew/opt/libomp/lib")
+target_include_directories(openmp PRIVATE "/opt/homebrew/opt/libomp/include")
+target_link_libraries(openmp PRIVATE omp)
+target_compile_options(openmp PRIVATE -O3 -fopenmp)
+
+
 # Output build artifacts in a dedicated directory
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

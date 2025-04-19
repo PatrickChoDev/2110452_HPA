@@ -2,6 +2,7 @@ BUILD_DIR := build
 CMAKE_BUILD_TYPE := Release
 CMAKE_GENERATOR := Ninja
 TARGET := vectorization_neon
+CMAKE_PREFIX_PATH := -DCMAKE_PREFIX_PATH=/opt/homebrew
 
 # Default target
 all: $(BUILD_DIR)
@@ -9,7 +10,7 @@ all: $(BUILD_DIR)
 
 # Configure the build directory
 $(BUILD_DIR):
-	cmake -S . -B $(BUILD_DIR) -G $(CMAKE_GENERATOR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
+	cmake  $(CMAKE_PREFIX_PATH) -S . -B $(BUILD_DIR) -G $(CMAKE_GENERATOR) -DCMAKE_BUILD_TYPE=$(CMAKE_BUILD_TYPE)
 
 # Build a specific target
 build-%: $(BUILD_DIR)
