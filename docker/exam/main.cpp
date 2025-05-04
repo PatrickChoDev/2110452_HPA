@@ -2,118 +2,160 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <set>
+#include <unordered_set>
 #include <omp.h>
-#include <memory>
+#include <algorithm>
+#include <numeric>
+#include <string>
 #include <sstream>
 
 using namespace std;
 
-int main(int numArgs, char* inputArgs[]) {
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        cerr << "Usage: " << argv[0] << " input_file output_file" << endl;
+        return 1;
+    }
+
+    // Faster I/O operations
     ios_base::sync_with_stdio(false);
-    cin.tie(nullptr)
+    cin.tie(nullptr);
+    cout.tie(nullptr);
 
-    ifstream inputFile(inputArgs[1], ios::binary);
-    ofstream outputFile(inputArgs[2], ios::binary);
-
-    inputFile.rdbuf()->pubsetbuf(nullptr, 0);
-    outputFile.rdbuf()->pubsetbuf(nullptr, 0);
-
-    if (!inputFile.is_open()) {
+    // Read the entire file at once for better I/O performance
+    ifstream in(argv[1], ios::in | ios::binary);
+    if (!in.is_open()) {
         cerr << "Failed to open input file." << endl;
         return 1;
     }
 
-    int numVertices, numEdges;
-    inputFile >> numVertices >> numEdges;
+    // Read file content into memory
+    in.seekg(0, ios::end);
+    size_t size = in.tellg();
+    in.seekg(0, ios::beg);
+    string buffer(size, ' ');
+    in.read(&buffer[0], size);
+    in.close();
 
-    // Use vectors with preallocated space for better cache performance
-    vector<vector<int>> adjList(numVertices);
+    // Parse from memory
+    istringstream iss(buffer);
+    int n, m;
+    iss >> n >> m;
+
+    // Use unordered_set for faster lookup
+    vector<unordered_set<int>> graph(n);
+
+    // Pre-allocate memory to avoid reallocations
     #pragma omp parallel for
-    for (int vertexId = 0; vertexId < numVertices; vertexId++) {
-        adjList[vertexId].reserve(numVertices/4); // Estimate average degree
+    for (int i = 0; i < n; ++i) {
+        graph[i].reserve(n/4); // Reserve with estimation
     }
 
-    // Sequential graph construction to avoid race conditions
-    for (int edgeId = 0; edgeId < numEdges; ++edgeId) {
-        int vertex1, vertex2;
-        inputFile >> vertex1 >> vertex2;
-        adjList[vertex1].push_back(vertex2);
-        adjList[vertex2].push_back(vertex1);
+    // Parallel edge reading using OpenMP
+    vector<pair<int, int>> edges(m);
+    for (int i = 0; i < m; ++i) {
+        iss >> edges[i].first >> edges[i].second;
     }
+
+    #pragma omp parallel for
+    for (int i = 0; i < m; ++i) {
+        int u = edges[i].first;
+        int v = edges[i].second;
+        #pragma omp critical
+        {
+            graph[u].insert(v);
+            graph[v].insert(u);
+        }
+    }
+
+    // Disable GLPK terminal output for performance
+    glp_term_out(GLP_OFF);
 
     // ILP setup with GLPK
-    unique_ptr<glp_prob, void(*)(glp_prob*)> linearProgram(glp_create_prob(), glp_delete_prob);
-    glp_set_prob_name(linearProgram.get(), "minimum_dominating_set");
-    glp_set_obj_dir(linearProgram.get(), GLP_MIN);
+    glp_prob *lp = glp_create_prob();
+    glp_set_prob_name(lp, "minimum_dominating_set");
+    glp_set_obj_dir(lp, GLP_MIN);
+    glp_add_cols(lp, n);
 
-    // Setup columns in parallel
+    // Vectorize column setup
     #pragma omp parallel for
-    for (int vertexId = 0; vertexId < numVertices; ++vertexId) {
-        glp_set_col_kind(linearProgram.get(), vertexId + 1, GLP_BV);
-        glp_set_obj_coef(linearProgram.get(), vertexId + 1, 1.0);
+    for (int i = 0; i < n; ++i) {
+        glp_set_col_kind(lp, i + 1, GLP_BV);
+        glp_set_obj_coef(lp, i + 1, 1.0);
     }
 
-    // Setup constraints in parallel chunks
+    // Prepare data for batch constraint addition
+    vector<int> rowIndices;
+    vector<vector<int>> allInds;
+    vector<vector<double>> allVals;
+    vector<int> rowSizes;
+
+    rowIndices.reserve(n);
+    allInds.reserve(n);
+    allVals.reserve(n);
+    rowSizes.reserve(n);
+
+    // Batch process constraint data preparation
     #pragma omp parallel for schedule(dynamic)
-    for (int vertexId = 0; vertexId < numVertices; ++vertexId) {
-        vector<int> indices(adjList[vertexId].size() + 2);
-        vector<double> values(adjList[vertexId].size() + 2);
+    for (int i = 0; i < n; ++i) {
+        vector<int> ind(graph[i].size() + 2); // +2 for 1-indexed and self
+        vector<double> val(graph[i].size() + 2);
 
-        #pragma omp critical
-        {
-            glp_add_rows(linearProgram.get(), 1);
-            glp_set_row_bnds(linearProgram.get(), vertexId + 1, GLP_LO, 1.0, 0.0);
-        }
+        ind[1] = i + 1; // 1-indexed
+        val[1] = 1.0;
 
-        indices[1] = vertexId + 1;
-        values[1] = 1.0;
-
-        int currentIdx = 2;
-        for (int adjacentVertex : adjList[vertexId]) {
-            indices[currentIdx] = adjacentVertex + 1;
-            values[currentIdx] = 1.0;
-            currentIdx++;
+        int idx = 2;
+        for (int neighbor : graph[i]) {
+            ind[idx] = neighbor + 1; // 1-indexed
+            val[idx] = 1.0;
+            idx++;
         }
 
         #pragma omp critical
         {
-            glp_set_mat_row(linearProgram.get(), vertexId + 1, currentIdx-1, indices.data(), values.data());
+            rowIndices.push_back(i + 1);
+            allInds.push_back(move(ind));
+            allVals.push_back(move(val));
+            rowSizes.push_back(idx - 1); // Store actual size
         }
     }
 
-    // Optimize solver parameters
-    glp_iocp solverParams;
-    glp_init_iocp(&solverParams);
-    solverParams.presolve = GLP_ON;
-    solverParams.mip_gap = 0.0;
-    solverParams.tm_lim = 1000000;
-    solverParams.out_frq = 500;
-    solverParams.msg_lev = GLP_MSG_OFF;
-    solverParams.br_tech = GLP_BR_DTH;
-    solverParams.bt_tech = GLP_BT_BLB;
+    // Add rows in batch for better performance
+    glp_add_rows(lp, n);
 
-    int solverResult = glp_intopt(linearProgram.get(), &solverParams);
+    for (int i = 0; i < n; ++i) {
+        glp_set_row_bnds(lp, i + 1, GLP_LO, 1.0, 0.0);
+        glp_set_mat_row(lp, i + 1, rowSizes[i], allInds[i].data(), allVals[i].data());
+    }
 
-    outputFile.tie(nullptr);
-    if (solverResult == 0) {
-        stringstream resultStream;
-        #pragma omp parallel
-        {
-            stringstream threadStream;
-            #pragma omp for ordered
-            for (int vertexId = 0; vertexId < numVertices; ++vertexId) {
-                threadStream << glp_mip_col_val(linearProgram.get(), vertexId + 1);
-                #pragma omp ordered
-                resultStream << threadStream.str();
-                threadStream.str("");
-            }
+    // Solve with optimized parameters
+    glp_iocp parm;
+    glp_init_iocp(&parm);
+    parm.presolve = GLP_ON;
+    parm.tm_lim = 60000; // Set time limit (ms)
+    parm.mip_gap = 0.01; // Allow 1% gap
+    parm.fp_heur = GLP_ON; // Enable feasibility pump heuristic
+    parm.sr_heur = GLP_ON; // Enable simple rounding heuristic
+
+    int ret = glp_intopt(lp, &parm);
+
+    // Use a string buffer for output
+    stringstream output;
+    if (ret == 0) {
+        for (int i = 0; i < n; ++i) {
+            output << glp_mip_col_val(lp, i + 1);
         }
-        outputFile << resultStream.str();
     } else {
         cerr << "Solver failed." << endl;
+        glp_delete_prob(lp);
         return 1;
     }
 
+    // Write output all at once
+    ofstream out(argv[2]);
+    out << output.str();
+    out.close();
+
+    glp_delete_prob(lp);
     return 0;
 }
